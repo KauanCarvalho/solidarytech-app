@@ -162,12 +162,76 @@ jobs:
     with:
       service_name: ${{ matrix.service }}
 
+  test:
+    name: Test & Coverage
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect runtime
+        id: runtime
+        uses: ./.github/actions/detect-runtime
+        with:
+          service: ${{ matrix.service }}
+
+      - name: Setup Go
+        if: steps.runtime.outputs.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.runtime.outputs.version }}
+
+      - name: Test Go (com coverage)
+        if: steps.runtime.outputs.lang == 'go'
+        run: |
+          cd local/services/${{ matrix.service }}
+          go test ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: Setup Python
+        if: steps.runtime.outputs.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ steps.runtime.outputs.version }}
+
+      - name: Install deps
+        if: steps.runtime.outputs.lang == 'python'
+        run: |
+          SERVICE_PATH="local/services/${{ matrix.service }}"
+          pip install -r "$SERVICE_PATH/requirements.txt"
+          pip install -r "$SERVICE_PATH/requirements-test.txt"
+
+      - name: Test Python (com coverage)
+        if: steps.runtime.outputs.lang == 'python'
+        run: |
+          cd local/services/${{ matrix.service }}
+          pytest --cov=. --cov-report=xml:coverage.xml
+
+      - name: Upload coverage artifact
+        if: steps.runtime.outputs.lang == 'go' || steps.runtime.outputs.lang == 'python'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.service }}
+          path: |
+            local/services/${{ matrix.service }}/coverage.out
+            local/services/${{ matrix.service }}/coverage.xml
+          if-no-files-found: ignore
+          retention-days: 1
+
   sonar:
     name: SonarCloud Analysis
     needs:
+      - detect-changes
       - build
       - lint
       - sca
+      - test
     if: needs.detect-changes.outputs.services != '[]'
     runs-on: ubuntu-latest
 
@@ -176,7 +240,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Build sources list
+      # Traz os coverage.out/coverage.xml gerados no job "test", recriando o
+      # caminho local/services/<service>/... para casar com sonar.sources=. —
+      # sem isso, o argumento de coverage do Sonar aponta pra um arquivo que
+      # nunca existiu no runner deste job (o "coverage fantasma").
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: .
+          merge-multiple: true
+
+      - name: Build sources and coverage args
         id: sources
         run: |
           SERVICES='${{ needs.detect-changes.outputs.services }}'
@@ -191,20 +266,53 @@ jobs:
           echo "sources=$SOURCES" >> $GITHUB_OUTPUT
           echo "Sources: $SOURCES"
 
+          GO_COVERAGE=()
+          PY_COVERAGE=()
+
+          for service in $(echo "$SERVICES" | jq -r '.[]'); do
+            DOCKERFILE="local/services/$service/Dockerfile"
+            BASE=$(grep -i '^FROM' "$DOCKERFILE" | grep -E 'golang|python' | head -n 1)
+
+            if echo "$BASE" | grep -qi 'golang' && [ -f "local/services/$service/coverage.out" ]; then
+              GO_COVERAGE+=("local/services/$service/coverage.out")
+            elif echo "$BASE" | grep -qi 'python' && [ -f "local/services/$service/coverage.xml" ]; then
+              PY_COVERAGE+=("local/services/$service/coverage.xml")
+            fi
+          done
+
+          GO_PATHS=$(IFS=,; echo "${GO_COVERAGE[*]}")
+          PY_PATHS=$(IFS=,; echo "${PY_COVERAGE[*]}")
+
+          echo "go_coverage=$GO_PATHS" >> $GITHUB_OUTPUT
+          echo "python_coverage=$PY_PATHS" >> $GITHUB_OUTPUT
+          echo "Go coverage paths: $GO_PATHS"
+          echo "Python coverage paths: $PY_PATHS"
+
       - name: Set up JDK 21 (required by SonarQube Cloud)
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "21"
 
+      - name: Build Sonar args
+        id: sonar_args
+        run: |
+          ARGS="-Dsonar.projectKey=KauanCarvalho_solidarytech-app -Dsonar.organization=kauancarvalho -Dsonar.sources=. -Dsonar.qualitygate.wait=true"
+
+          if [ -n "${{ steps.sources.outputs.go_coverage }}" ]; then
+            ARGS="$ARGS -Dsonar.go.coverage.reportPaths=${{ steps.sources.outputs.go_coverage }}"
+          fi
+
+          if [ -n "${{ steps.sources.outputs.python_coverage }}" ]; then
+            ARGS="$ARGS -Dsonar.python.coverage.reportPaths=${{ steps.sources.outputs.python_coverage }}"
+          fi
+
+          echo "args=$ARGS" >> $GITHUB_OUTPUT
+          echo "Sonar args: $ARGS"
+
       - name: SonarCloud Scan (SAST)
         uses: SonarSource/sonarcloud-github-action@v2
         with:
-          args: >
-            -Dsonar.projectKey=KauanCarvalho_solidarytech-app
-            -Dsonar.organization=kauancarvalho
-            -Dsonar.sources=.
-            -Dsonar.go.coverage.reportPaths=coverage.out
-            -Dsonar.qualitygate.wait=true
+          args: ${{ steps.sonar_args.outputs.args }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
