@@ -1,0 +1,103 @@
+name: Self-Healing — Auto Rollout Restart
+
+# Disparado por webhook do AlertManager via repository_dispatch
+on:
+  repository_dispatch:
+    types: [alert-firing]
+  # Também pode ser disparado manualmente
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Serviço a reiniciar"
+        required: true
+        type: choice
+        options:
+          - ngo-service
+          - donation-service
+          - volunteer-service
+      namespace:
+        description: "Namespace do serviço"
+        required: true
+        default: "donation-service"
+
+jobs:
+  self-heal:
+    name: Self-Healing Rollout Restart
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Determine service to restart
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            SERVICE="${{ github.event.client_payload.service }}"
+            NAMESPACE="${{ github.event.client_payload.namespace }}"
+          else
+            SERVICE="${{ github.event.inputs.service }}"
+            NAMESPACE="${{ github.event.inputs.namespace }}"
+          fi
+
+          echo "service=$SERVICE" >> $GITHUB_OUTPUT
+          echo "namespace=$NAMESPACE" >> $GITHUB_OUTPUT
+          echo "🔥 Self-healing acionado para: $SERVICE (namespace: $NAMESPACE)"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name solidarytech-cluster \
+            --region us-east-1
+
+      - name: Check current pod status
+        run: |
+          echo "📊 Estado atual dos pods em ${{ steps.target.outputs.namespace }}:"
+          kubectl get pods -n ${{ steps.target.outputs.namespace }}
+
+      - name: Execute rollout restart (Self-Healing)
+        run: |
+          echo "🔄 Executando kubectl rollout restart..."
+          kubectl rollout restart deployment/${{ steps.target.outputs.service }} \
+            -n ${{ steps.target.outputs.namespace }}
+
+      - name: Wait for rollout completion
+        run: |
+          echo "⏳ Aguardando rollout completar..."
+          kubectl rollout status deployment/${{ steps.target.outputs.service }} \
+            -n ${{ steps.target.outputs.namespace }} \
+            --timeout=120s
+
+      - name: Verify pods after restart
+        run: |
+          echo "✅ Estado dos pods após restart:"
+          kubectl get pods -n ${{ steps.target.outputs.namespace }}
+
+      - name: Notify Discord — Self-Healing executed
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          EMOJI="✅"
+          if [ "$STATUS" != "success" ]; then EMOJI="❌"; fi
+
+          curl -s -X POST "${{ secrets.DISCORD_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"$EMOJI Self-Healing — ${{ steps.target.outputs.service }}\",
+                \"description\": \"Rollout restart executado automaticamente pelo GitHub Actions.\",
+                \"color\": $([ \"$STATUS\" = \"success\" ] && echo \"3066993\" || echo \"15158332\"),
+                \"fields\": [
+                  {\"name\": \"Serviço\", \"value\": \"${{ steps.target.outputs.service }}\", \"inline\": true},
+                  {\"name\": \"Namespace\", \"value\": \"${{ steps.target.outputs.namespace }}\", \"inline\": true},
+                  {\"name\": \"Status\", \"value\": \"$STATUS\", \"inline\": true},
+                  {\"name\": \"Run\", \"value\": \"[Ver no GitHub](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\", \"inline\": false}
+                ],
+                \"timestamp\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+              }]
+            }"

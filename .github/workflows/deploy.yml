@@ -1,0 +1,120 @@
+name: Deploy
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to deploy (optional)"
+        required: false
+        type: choice
+        options:
+          - all
+          - ngo-service
+          - donation-service
+          - volunteer-service
+
+jobs:
+  detect-changes:
+    name: Detect Changed Services
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.set.outputs.services }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        run: |
+          git fetch origin main
+          git diff --name-only origin/main...HEAD > changed.txt
+          cat changed.txt
+
+      - name: Detect services (auto or manual)
+        id: set
+        run: |
+          services=()
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.service }}" ]; then
+            SERVICE="${{ github.event.inputs.service }}"
+
+            echo "Manual trigger for: $SERVICE"
+
+            if [ "$SERVICE" = "all" ]; then
+              echo "Full deploy triggered"
+
+              services+=('{"service":"ngo-service","ecr":"solidarytech-ngo"}')
+              services+=('{"service":"donation-service","ecr":"solidarytech-donation"}')
+              services+=('{"service":"volunteer-service","ecr":"solidarytech-volunteer"}')
+
+            else
+              case "$SERVICE" in
+                ngo-service)
+                  services+=('{"service":"ngo-service","ecr":"solidarytech-ngo"}')
+                  ;;
+                donation-service)
+                  services+=('{"service":"donation-service","ecr":"solidarytech-donation"}')
+                  ;;
+                volunteer-service)
+                  services+=('{"service":"volunteer-service","ecr":"solidarytech-volunteer"}')
+                  ;;
+              esac
+            fi
+
+          else
+            echo "Auto detect mode"
+
+            if grep -q "local/services/ngo-service/" changed.txt; then
+              services+=('{"service":"ngo-service","ecr":"solidarytech-ngo"}')
+            fi
+
+            if grep -q "local/services/donation-service/" changed.txt; then
+              services+=('{"service":"donation-service","ecr":"solidarytech-donation"}')
+            fi
+
+            if grep -q "local/services/volunteer-service/" changed.txt; then
+              services+=('{"service":"volunteer-service","ecr":"solidarytech-volunteer"}')
+            fi
+          fi
+
+          if [ ${#services[@]} -eq 0 ]; then
+            echo "services=[]" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          json=$(printf '%s\n' "${services[@]}" | jq -cs .)
+          echo "services=$json" >> $GITHUB_OUTPUT
+
+  no-changes:
+    name: No changes detected
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services == '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No services changed. Skipping deploy."
+
+  deploy:
+    name: Deploy Services
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services != '[]'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.services) }}
+
+    uses: ./.github/workflows/reusable-deploy.yml
+
+    with:
+      service_name: ${{ matrix.service }}
+      ecr_repository: ${{ matrix.ecr }}
+
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      GITOPS_APP_ID: ${{ secrets.GITOPS_APP_ID }}
+      GITOPS_APP_PRIVATE_KEY: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}

@@ -1,0 +1,59 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true
+    jsonData:
+      # Extrai traceId dos logs para link direto ao Tempo
+      derivedFields:
+        - datasourceUid: tempo
+          matcherRegex: '"?trace_?id"?\s*[=:]\s*"?([a-f0-9]{16,32})"?'
+          name: TraceID
+          url: "${__value.raw}"
+          urlDisplayLabel: "Ver trace no Tempo"
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: true
+    jsonData:
+      httpMethod: GET
+      grpcInsecure: true
+      # Service Map usa métricas geradas pelo Tempo → Prometheus
+      serviceMap:
+        datasourceUid: prometheus
+      # Node Graph para visualizar dependências
+      nodeGraph:
+        enabled: true
+      # Correlaciona traces com logs do Loki
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-1m"
+        spanEndTimeShift: "1m"
+        filterByTraceID: false
+        filterBySpanID: false
+        customQuery: false
+      # Correlaciona traces com métricas do Prometheus
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: "-1m"
+        spanEndTimeShift: "1m"
+        tags:
+          - key: service.name
+            value: service
+      search:
+        hide: false

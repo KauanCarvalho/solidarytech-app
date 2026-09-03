@@ -1,0 +1,210 @@
+name: CI
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  detect-changes:
+    name: Detect Changed Services
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.set.outputs.services }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        run: |
+          git fetch origin main
+          git diff --name-only origin/main...HEAD > changed.txt
+          cat changed.txt
+
+      - name: Detect services
+        id: set
+        run: |
+          services=()
+
+          for service in ngo-service donation-service volunteer-service; do
+            if grep -q "local/services/$service/" changed.txt; then
+              services+=("$service")
+            fi
+          done
+
+          echo "Detected: ${services[@]}"
+
+          json=$(printf '%s\n' "${services[@]}" | jq -R . | jq -cs .)
+          echo "services=$json" >> $GITHUB_OUTPUT
+
+  no-changes:
+    name: No changes detected
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services == '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No services changed. Skipping CI."
+
+  build:
+    name: Build
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect runtime
+        id: runtime
+        uses: ./.github/actions/detect-runtime
+        with:
+          service: ${{ matrix.service }}
+
+      - name: Debug runtime
+        run: |
+          echo "Lang: ${{ steps.runtime.outputs.lang }}"
+          echo "Version: ${{ steps.runtime.outputs.version }}"
+
+      - name: Setup Go
+        if: steps.runtime.outputs.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.runtime.outputs.version }}
+
+      - name: Build Go
+        if: steps.runtime.outputs.lang == 'go'
+        run: |
+          cd local/services/${{ matrix.service }}
+          go build ./...
+
+      - name: Setup Python
+        if: steps.runtime.outputs.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ steps.runtime.outputs.version }}
+
+      - name: Check Python syntax
+        if: steps.runtime.outputs.lang == 'python'
+        run: |
+          python -m py_compile $(find local/services/${{ matrix.service }} -name "*.py")
+
+  lint:
+    name: Lint
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect runtime
+        id: runtime
+        uses: ./.github/actions/detect-runtime
+        with:
+          service: ${{ matrix.service }}
+
+      - name: Setup Go
+        if: steps.runtime.outputs.lang == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.runtime.outputs.version }}
+
+      - name: Lint Go
+        if: steps.runtime.outputs.lang == 'go'
+        uses: golangci/golangci-lint-action@v7
+        with:
+          working-directory: local/services/${{ matrix.service }}
+
+      - name: Setup Python
+        if: steps.runtime.outputs.lang == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ steps.runtime.outputs.version }}
+
+      - name: Install deps
+        if: steps.runtime.outputs.lang == 'python'
+        run: |
+          pip install flake8
+          if [ -f local/services/${{ matrix.service }}/requirements.txt ]; then
+            pip install -r local/services/${{ matrix.service }}/requirements.txt
+          fi
+
+      - name: Lint Python
+        if: steps.runtime.outputs.lang == 'python'
+        run: |
+          flake8 local/services/${{ matrix.service }}
+
+  sca:
+    name: SCA (Trivy)
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services != '[]'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services) }}
+
+    uses: ./.github/workflows/reusable-sca.yml
+    with:
+      service_name: ${{ matrix.service }}
+
+  sonar:
+    name: SonarCloud Analysis
+    needs:
+      - build
+      - lint
+      - sca
+    if: needs.detect-changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build sources list
+        id: sources
+        run: |
+          SERVICES='${{ needs.detect-changes.outputs.services }}'
+
+          SOURCES=$(echo "$SERVICES" | jq -r '.[]' | sed 's|^|local/services/|' | paste -sd "," -)
+
+          if [ -z "$SOURCES" ]; then
+            echo "No sources to scan"
+            exit 0
+          fi
+
+          echo "sources=$SOURCES" >> $GITHUB_OUTPUT
+          echo "Sources: $SOURCES"
+
+      - name: Set up JDK 21 (required by SonarQube Cloud)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: SonarCloud Scan (SAST)
+        uses: SonarSource/sonarcloud-github-action@v2
+        with:
+          args: >
+            -Dsonar.projectKey=KauanCarvalho_solidarytech-app
+            -Dsonar.organization=kauancarvalho
+            -Dsonar.sources=.
+            -Dsonar.go.coverage.reportPaths=coverage.out
+            -Dsonar.qualitygate.wait=true
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

@@ -1,0 +1,18 @@
+format: table
+
+severity:
+  - CRITICAL
+
+exit-code: 1
+
+ignore-unfixed: true
+
+ignorefile: .trivyignore
+
+vuln-type:
+  - os
+  - library
+
+timeout: 5m
+
+cache-dir: /tmp/trivy-cache

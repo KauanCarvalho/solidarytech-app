@@ -1,0 +1,50 @@
+name: Detect Runtime
+
+description: Detect language and version from Dockerfile
+
+inputs:
+  service:
+    description: Service name
+    required: true
+
+outputs:
+  lang:
+    description: Detected language
+  version:
+    description: Detected version
+
+runs:
+  using: "composite"
+  steps:
+    - id: detect
+      shell: bash
+      run: |
+        SERVICE_PATH="local/services/${{ inputs.service }}"
+        DOCKERFILE="$SERVICE_PATH/Dockerfile"
+
+        if [ ! -f "$DOCKERFILE" ]; then
+          echo "lang=unknown" >> $GITHUB_OUTPUT
+          echo "version=unknown" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        BASE=$(grep -i '^FROM' "$DOCKERFILE" | grep -E 'golang|python' | head -n 1)
+
+        echo "Detected FROM: $BASE"
+
+        if echo "$BASE" | grep -qi 'golang'; then
+          VERSION=$(echo "$BASE" | sed -E 's/.*golang:([^ -]+).*/\1/')
+          echo "lang=go" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        if echo "$BASE" | grep -qi 'python'; then
+          VERSION=$(echo "$BASE" | sed -E 's/.*python:([^ -]+).*/\1/')
+          echo "lang=python" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
+        echo "lang=unknown" >> $GITHUB_OUTPUT
+        echo "version=unknown" >> $GITHUB_OUTPUT

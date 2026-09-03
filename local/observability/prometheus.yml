@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Métricas dos serviços via OTel Collector (OTLP → Prometheus)
+  - job_name: otelcol-services
+    static_configs:
+      - targets: ['otelcol:8889']
+
+  # Métricas internas do próprio OTel Collector
+  - job_name: otelcol-internal
+    static_configs:
+      - targets: ['otelcol:8888']
+
+  # Métricas internas do Tempo
+  - job_name: tempo
+    static_configs:
+      - targets: ['tempo:3200']

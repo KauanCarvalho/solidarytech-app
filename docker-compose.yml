@@ -1,0 +1,129 @@
+services:
+  ngo-db:
+    image: postgres:16-alpine
+    container_name: ngo-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER_NGO_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_NGO_DB}
+      POSTGRES_DB: ${POSTGRES_DB_NGO_DB}
+    volumes:
+      - ngo-db-data:/var/lib/postgresql/data
+      - ./local/services/ngo-service/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER_NGO_DB} -d ${POSTGRES_DB_NGO_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - solidarytech-network
+
+  ngo-service:
+    build:
+      context: ./local/services/ngo-service
+    pull_policy: never
+    container_name: ngo-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER_NGO_DB}:${POSTGRES_PASSWORD_NGO_DB}@ngo-db:5432/${POSTGRES_DB_NGO_DB}?sslmode=disable"
+      PORT: ${PORT_NGO_SERVICE}
+    ports:
+      - "${PORT_NGO_SERVICE}:${PORT_NGO_SERVICE}"
+    depends_on:
+      ngo-db:
+        condition: service_healthy
+    networks:
+      - solidarytech-network
+
+  donation-db:
+    image: postgres:16-alpine
+    container_name: donation-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER_DONATION_DB}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD_DONATION_DB}
+      POSTGRES_DB: ${POSTGRES_DB_DONATION_DB}
+    volumes:
+      - donation-db-data:/var/lib/postgresql/data
+      - ./local/services/donation-service/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER_DONATION_DB} -d ${POSTGRES_DB_DONATION_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - solidarytech-network
+
+  localstack:
+    image: localstack/localstack:latest
+    container_name: solidarytech-localstack
+    restart: unless-stopped
+    environment:
+      - SERVICES=sqs,dynamodb
+      - DEFAULT_REGION=us-east-1
+      - SQS_ENDPOINT_STRATEGY=path
+    ports:
+      - "4566:4566"
+    healthcheck:
+      test: [ "CMD-SHELL", "awslocal sqs list-queues || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - solidarytech-network
+
+  donation-service:
+    build:
+      context: ./local/services/donation-service
+    pull_policy: never
+    container_name: donation-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER_DONATION_DB}:${POSTGRES_PASSWORD_DONATION_DB}@donation-db:5432/${POSTGRES_DB_DONATION_DB}?sslmode=disable"
+      PORT: ${PORT_DONATION_SERVICE}
+      AWS_REGION: ${AWS_REGION}
+      AWS_SQS_URL: ${AWS_SQS_URL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+    ports:
+      - "${PORT_DONATION_SERVICE}:${PORT_DONATION_SERVICE}"
+    depends_on:
+      donation-db:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    networks:
+      - solidarytech-network
+
+  volunteer-service:
+    build:
+      context: ./local/services/volunteer-service
+    pull_policy: never
+    container_name: volunteer-service
+    restart: unless-stopped
+    environment:
+      PORT: ${PORT_VOLUNTEER_SERVICE}
+      AWS_REGION: ${AWS_REGION}
+      AWS_DYNAMODB_TABLE: ${AWS_DYNAMODB_TABLE}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_ENDPOINT_URL: ${AWS_ENDPOINT_URL}
+    ports:
+      - "${PORT_VOLUNTEER_SERVICE}:${PORT_VOLUNTEER_SERVICE}"
+    depends_on:
+      localstack:
+        condition: service_healthy
+    networks:
+      - solidarytech-network
+
+volumes:
+  ngo-db-data:
+  donation-db-data:
+
+networks:
+  solidarytech-network:
+    driver: bridge

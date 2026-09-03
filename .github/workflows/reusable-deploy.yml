@@ -1,0 +1,126 @@
+name: Reusable Service Deploy (GitOps)
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        required: true
+        type: string
+      ecr_repository:
+        required: true
+        type: string
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_SESSION_TOKEN:
+        required: false
+      GITOPS_APP_ID:
+        required: true
+      GITOPS_APP_PRIVATE_KEY:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source code
+        uses: actions/checkout@v4
+
+      - name: Generate image tag
+        id: metadata
+        run: |
+          COMMIT="${GITHUB_SHA::7}"
+          TAG="v1.0.0-${COMMIT}"
+          echo "TAG=${TAG}" >> $GITHUB_ENV
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Build Docker image
+        id: build-image
+        run: |
+          IMAGE_NAME="${{ inputs.ecr_repository }}:${{ env.TAG }}"
+          docker build -t $IMAGE_NAME local/services/${{ inputs.service_name }}
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@v0.20.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}
+          trivy-config: .trivy.yaml
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Tag and push image to ECR
+        id: push-image
+        run: |
+          FULL_IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.IMAGE_NAME }}"
+          docker tag ${{ env.IMAGE_NAME }} $FULL_IMAGE_URI
+          docker push $FULL_IMAGE_URI
+          echo "FULL_IMAGE_URI=$FULL_IMAGE_URI" >> $GITHUB_ENV
+          echo "image_uri=$FULL_IMAGE_URI" >> $GITHUB_OUTPUT
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GITOPS_APP_ID }}
+          private_key: ${{ secrets.GITOPS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: solidarytech-gitops
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/solidarytech-gitops
+          token: ${{ steps.app-token.outputs.token }}
+          path: gitops-repo
+          fetch-depth: 0
+
+      - name: Checkout or create target branch
+        working-directory: gitops-repo
+        run: |
+          BRANCH="${{ github.ref_name }}"
+
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            git checkout "$BRANCH"
+          else
+            echo "Branch '$BRANCH' does not exist on gitops repo yet, creating it."
+            git checkout -b "$BRANCH"
+          fi
+
+      - name: Update Kubernetes manifests
+        run: |
+          export IMAGE_URI=${{ env.FULL_IMAGE_URI }}
+          mkdir -p gitops-repo/k8s/apps/${{ inputs.service_name }}
+          envsubst < gitops-repo/k8s/templates/${{ inputs.service_name }}/deployment.tmpl.yaml > gitops-repo/k8s/apps/${{ inputs.service_name }}/deployment.yaml
+
+      - name: Commit and push changes
+        run: |
+          cd gitops-repo
+
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+          git add k8s/apps/${{ inputs.service_name }}/deployment.yaml
+
+          git commit -m "chore: Update ${{ inputs.service_name }} image to ${{ env.TAG }}" || echo "No changes to commit"
+
+          BRANCH="${{ github.ref_name }}"
+
+          for i in {1..5}; do
+            git pull --rebase origin "$BRANCH" || true
+            git push origin HEAD:"$BRANCH" && break
+            echo "Retry $i..."
+            sleep 2
+          done

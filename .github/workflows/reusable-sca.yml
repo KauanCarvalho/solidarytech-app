@@ -1,0 +1,25 @@
+name: Reusable SCA Scan
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        required: true
+        type: string
+
+jobs:
+  sca:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy SCA scan
+        uses: aquasecurity/trivy-action@v0.20.0
+        with:
+          scan-type: fs
+          scan-ref: ./local/services/${{ inputs.service_name }}
+          trivy-config: .trivy.yaml
+          format: table
+          exit-code: 1
