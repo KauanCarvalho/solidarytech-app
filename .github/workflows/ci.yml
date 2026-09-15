@@ -288,12 +288,6 @@ jobs:
           echo "Go coverage paths: $GO_PATHS"
           echo "Python coverage paths: $PY_PATHS"
 
-      - name: Set up JDK 21 (required by SonarQube Cloud)
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "21"
-
       - name: Build Sonar args
         id: sonar_args
         run: |
@@ -311,7 +305,7 @@ jobs:
           echo "Sonar args: $ARGS"
 
       - name: SonarCloud Scan (SAST)
-        uses: SonarSource/sonarcloud-github-action@v2
+        uses: SonarSource/sonarqube-scan-action@689fb39b34b9aa95ebc5f8f119343ddd51542402 # v4
         with:
           args: ${{ steps.sonar_args.outputs.args }}
         env:
