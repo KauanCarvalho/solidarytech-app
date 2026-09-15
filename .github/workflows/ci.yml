@@ -305,7 +305,7 @@ jobs:
           echo "Sonar args: $ARGS"
 
       - name: SonarCloud Scan (SAST)
-        uses: SonarSource/sonarqube-scan-action@v4
+        uses: SonarSource/sonarqube-scan-action@689fb39b34b9aa95ebc5f8f119343ddd51542402 # v4
         with:
           args: ${{ steps.sonar_args.outputs.args }}
         env:
