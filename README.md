@@ -11,7 +11,7 @@ Turma: **2DCLT** — DevOps e Arquitetura Cloud Pós Tech.
 | Pedro Henrique Coittinho Marcondes de Andrade | 369367 |
 
 Repositório de GitOps/Infra (Terraform, Kubernetes, ArgoCD, observabilidade): [solidarytech-gitops](https://github.com/KauanCarvalho/solidarytech-gitops)
-Vídeo de demonstração: _(adicionar link antes da entrega)_
+Vídeo de demonstração: https://youtu.be/3_mbVJif344
 
 ---
 
@@ -134,4 +134,4 @@ A tabela completa (todos os requisitos do edital) está em [`solidarytech-gitops
 
 - Repositório GitOps: https://github.com/KauanCarvalho/solidarytech-gitops
 - Código-fonte base fornecido: https://github.com/dougls/hackathon-DCLT
-- Vídeo de demonstração: _(adicionar antes da entrega)_
+- Vídeo de demonstração: https://youtu.be/3_mbVJif344
