@@ -125,7 +125,7 @@ A tabela completa (todos os requisitos do edital) está em [`solidarytech-gitops
 | 0.4 (parcial) | GitOps — sem `kubectl apply` manual | ✅ | `reusable-deploy.yml` só faz commit-back no repo gitops; nunca `kubectl apply` | Exigência literal da "Regra de Ouro" do edital |
 | 0.5 (parcial) | Instrumentação OTel + Distributed Tracing | ✅ | `donation-service`: SDK OTel manual (`otel.go`/`metrics.go`); `ngo-service`/`volunteer-service`: `opentelemetry-bootstrap` + métricas manuais via `before_request`/`after_request` | Necessário para o dashboard SRE e para tracing cross-service (item 0.5 completo, incl. stack de coleta, está no repo gitops) |
 
-📸 **Evidência visual:** _(inserir screenshot antes da entrega)_
+📸 **Evidência visual:**
 ![Pipeline CI/CD (ci.yml + deploy.yml) verde: Trivy + SonarCloud + build + push ECR](docs/evidencias/pipeline-cicd.png)
 
 ---
